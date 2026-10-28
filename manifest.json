@@ -1,0 +1,19 @@
+{
+  "name": "Ticket Vault",
+  "short_name": "Tickets",
+  "description": "Store trip tickets offline on this device.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0e1116",
+  "theme_color": "#12161c",
+  "icons": [
+    {
+      "src": "./icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
