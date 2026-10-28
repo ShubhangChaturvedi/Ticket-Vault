@@ -3,10 +3,18 @@ const DB_VERSION = 1;
 const STORE_TRIPS = "trips";
 const STORE_SEGMENTS = "segments";
 const STORE_TICKETS = "tickets";
+const DIRECTION_LABELS = {
+  outbound: "Outbound",
+  inbound: "Inbound",
+  "round-trip": "Round Trip",
+  local: "Round Trip"
+};
 
 let db;
 let activeTripId = null;
 let deferredInstallPrompt = null;
+let swipeStartX = 0;
+let swipeStartY = 0;
 const objectUrls = new Set();
 
 const dashboard = document.getElementById("dashboard");
@@ -127,6 +135,31 @@ function formatRange(startDate, endDate) {
   return `${startFmt} – ${endFmt}`;
 }
 
+function localToday() {
+  const now = new Date();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${now.getFullYear()}-${month}-${day}`;
+}
+
+function isTripActive(trip) {
+  const today = localToday();
+  return today >= trip.startDate && today <= trip.endDate;
+}
+
+function monthKey(startDate) {
+  return String(startDate).slice(0, 7);
+}
+
+function monthLabel(startDate) {
+  const date = new Date(`${startDate}T00:00:00`);
+  return date.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+}
+
+function directionLabel(value) {
+  return DIRECTION_LABELS[value] || value;
+}
+
 function show(view) {
   dashboard.classList.toggle("hidden", view !== "dashboard");
   tripFormPanel.classList.toggle("hidden", view !== "form");
@@ -146,25 +179,70 @@ function fileUrl(blob) {
   return url;
 }
 
+async function goHome() {
+  activeTripId = null;
+  revokeUrls();
+  await renderDashboard();
+  show("dashboard");
+}
+
+function createTripCard(trip, segments, tickets) {
+  const active = isTripActive(trip);
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = active ? "trip-card is-active" : "trip-card";
+  const title = document.createElement("strong");
+  title.textContent = trip.name;
+  const dates = document.createElement("span");
+  dates.className = "date-line";
+  dates.textContent = formatRange(trip.startDate, trip.endDate);
+  const meta = document.createElement("span");
+  meta.className = "meta";
+  meta.textContent = `${segments.length} segments · ${tickets.length} tickets`;
+  button.appendChild(title);
+  if (active) {
+    const badges = document.createElement("div");
+    badges.className = "badge-row";
+    const badge = document.createElement("span");
+    badge.className = "badge badge-active";
+    badge.textContent = "Active today";
+    badges.appendChild(badge);
+    button.appendChild(badges);
+  }
+  button.append(dates, meta);
+  button.addEventListener("click", () => openTrip(trip.id));
+  return button;
+}
+
 async function renderDashboard() {
   const trips = await getAll(STORE_TRIPS);
-  trips.sort((a, b) => String(b.startDate).localeCompare(String(a.startDate)));
+  trips.sort((a, b) => String(a.startDate).localeCompare(String(b.startDate)) || a.id - b.id);
   tripList.innerHTML = "";
   tripCount.textContent = `${trips.length} stored`;
   emptyState.classList.toggle("hidden", trips.length > 0);
+  let currentMonth = "";
+  let monthTrips = null;
   for (const trip of trips) {
+    const key = monthKey(trip.startDate);
+    if (key !== currentMonth) {
+      currentMonth = key;
+      const group = document.createElement("li");
+      group.className = "month-group";
+      const heading = document.createElement("h3");
+      heading.className = "month-label";
+      heading.textContent = monthLabel(trip.startDate);
+      monthTrips = document.createElement("ul");
+      monthTrips.className = "month-trips";
+      group.append(heading, monthTrips);
+      tripList.appendChild(group);
+    }
     const [segments, tickets] = await Promise.all([
       getByIndex(STORE_SEGMENTS, "tripId", trip.id),
       getByIndex(STORE_TICKETS, "tripId", trip.id)
     ]);
     const item = document.createElement("li");
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "trip-card";
-    button.innerHTML = `<strong>${escapeHtml(trip.name)}</strong><span class="meta">${formatRange(trip.startDate, trip.endDate)}</span><span class="meta">${segments.length} segments · ${tickets.length} tickets</span>`;
-    button.addEventListener("click", () => openTrip(trip.id));
-    item.appendChild(button);
-    tripList.appendChild(item);
+    item.appendChild(createTripCard(trip, segments, tickets));
+    monthTrips.appendChild(item);
   }
 }
 
@@ -189,8 +267,9 @@ async function renderSegments(tripId) {
     const tickets = await getByIndex(STORE_TICKETS, "segmentId", segment.id);
     const item = document.createElement("li");
     item.className = "segment-card";
-    const title = document.createElement("strong");
-    title.textContent = segment.direction;
+    const title = document.createElement("span");
+    title.className = "badge badge-dir";
+    title.textContent = directionLabel(segment.direction);
     const meta = document.createElement("p");
     meta.className = "meta";
     meta.textContent = `Group of ${segment.groupSize}`;
@@ -210,14 +289,6 @@ async function renderSegments(tripId) {
   }
 }
 
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
-
 function filesFromForm(form) {
   const input = form.querySelector('input[type="file"]');
   return input ? input.files : [];
@@ -232,12 +303,23 @@ document.getElementById("cancelFormBtn").addEventListener("click", () => {
   show("dashboard");
 });
 
-document.getElementById("backBtn").addEventListener("click", async () => {
-  activeTripId = null;
-  revokeUrls();
-  await renderDashboard();
-  show("dashboard");
+document.getElementById("backBtn").addEventListener("click", () => {
+  goHome();
 });
+
+tripDetail.addEventListener("touchstart", (event) => {
+  const touch = event.changedTouches[0];
+  swipeStartX = touch.clientX;
+  swipeStartY = touch.clientY;
+}, { passive: true });
+
+tripDetail.addEventListener("touchend", (event) => {
+  const touch = event.changedTouches[0];
+  const dx = touch.clientX - swipeStartX;
+  const dy = touch.clientY - swipeStartY;
+  if (Math.abs(dx) < 72 || Math.abs(dx) <= Math.abs(dy) * 1.4) return;
+  goHome();
+}, { passive: true });
 
 document.getElementById("deleteTripBtn").addEventListener("click", async () => {
   if (!activeTripId) return;

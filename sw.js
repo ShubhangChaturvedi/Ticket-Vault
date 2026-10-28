@@ -1,4 +1,4 @@
-const CACHE_NAME = "ticket-vault-v1";
+const CACHE_NAME = "ticket-vault-v2";
 const APP_SHELL = [
   "./",
   "./index.html",
